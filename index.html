@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>新标签页</title>
+  <title>轻舟</title>
   <style>
     /* ====== Reset & Base ====== */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -195,8 +195,6 @@
       margin-top: 10px;
       border-top: 1px solid rgba(255,255,255,0.12);
       padding-top: 6px;
-      max-height: 300px;
-      overflow-y: auto;
       display: none;
     }
     #suggestions.show {
@@ -811,11 +809,11 @@ async function fetchSuggestions(q) {
   const ver = ++sugVersion;
   if (!q.trim()) { hideSugs(); return; }
 
-  const cbName = `_sug_${++jsonpSeq}`;
   let items = [];
 
   try {
     if (state.engine === 'baidu') {
+      const cbName = `_sug_${++jsonpSeq}`;
       const d = await jsonp(
         `https://suggestion.baidu.com/su?wd=${encodeURIComponent(q)}&cb=${cbName}`,
         cbName
@@ -823,14 +821,10 @@ async function fetchSuggestions(q) {
       items = (d.s || []).slice(0, 8);
 
     } else if (state.engine === 'google') {
-      // Google Suggest JSONP — returns ["query",["s1","s2",...],...]
-      const d = await jsonp(
-        `https://suggestqueries.google.com/complete/search?client=chrome&q=${encodeURIComponent(q)}&callback=${cbName}`,
-        cbName
-      );
-      items = (Array.isArray(d) ? d[1] || [] : []).slice(0, 8);
+      items = await fetchGoogleSuggestions(q, ver);
 
     } else if (state.engine === 'bing') {
+      const cbName = `_sug_${++jsonpSeq}`;
       const d = await jsonp(
         `https://api.bing.com/qsonhs.aspx?type=cb&q=${encodeURIComponent(q)}&cb=${cbName}`,
         cbName
@@ -839,14 +833,68 @@ async function fetchSuggestions(q) {
       items = r.map(x => x.Txt).slice(0, 8);
     }
   } catch {
-    // Request failed (timeout / network) — silently hide suggestions
     if (ver === sugVersion) hideSugs();
     return;
   }
 
-  if (ver !== sugVersion) return;   // stale response — discard
+  if (ver !== sugVersion) return;
   currentSugs = items;
   renderSugs(items);
+}
+
+/**
+ * Google Suggest — try multiple endpoints with automatic fallback.
+ * 1. suggestqueries.google.com  (client=hp — Google Homepage, best JSONP support)
+ * 2. www.google.com/complete/search  (client=psy-ab — Google Search page client)
+ * 3. CORS fetch to suggestqueries.google.com  (client=firefox — plain JSON)
+ */
+async function fetchGoogleSuggestions(q, ver) {
+  const eq = encodeURIComponent(q);
+
+  // --- Attempt 1: suggestqueries.google.com with client=hp (homepage) ---
+  try {
+    const cb1 = `_sug_${++jsonpSeq}`;
+    const d = await jsonp(
+      `https://suggestqueries.google.com/complete/search?client=hp&hl=zh-CN&q=${eq}&callback=${cb1}`,
+      cb1, 4000
+    );
+    if (ver !== sugVersion) return [];
+    const items = parseGoogleResponse(d);
+    if (items.length) return items;
+  } catch { /* endpoint down or blocked — try next */ }
+
+  // --- Attempt 2: www.google.com with client=psy-ab (search page client) ---
+  try {
+    const cb2 = `_sug_${++jsonpSeq}`;
+    const d = await jsonp(
+      `https://www.google.com/complete/search?client=psy-ab&hl=zh-CN&q=${eq}&callback=${cb2}`,
+      cb2, 4000
+    );
+    if (ver !== sugVersion) return [];
+    const items = parseGoogleResponse(d);
+    if (items.length) return items;
+  } catch { /* also blocked — try final fallback */ }
+
+  // --- Attempt 3: CORS fetch (client=firefox returns plain JSON) ---
+  try {
+    const resp = await fetch(
+      `https://suggestqueries.google.com/complete/search?client=firefox&hl=zh-CN&q=${eq}`,
+      { signal: AbortSignal.timeout(4000) }
+    );
+    if (ver !== sugVersion) return [];
+    const d = await resp.json();
+    return parseGoogleResponse(d);
+  } catch { /* all attempts failed */ }
+
+  return [];
+}
+
+/** Parse Google response: ["query",["s1","s2",...],...] → suggestions array */
+function parseGoogleResponse(d) {
+  if (Array.isArray(d) && Array.isArray(d[1])) {
+    return d[1].filter(s => typeof s === 'string').slice(0, 8);
+  }
+  return [];
 }
 
 function renderSugs(items) {
