@@ -746,8 +746,9 @@ document.getElementById('search-input').addEventListener('keydown', e => {
   }
 });
 
-window.addEventListener('load', () => {
-  setTimeout(() => document.getElementById('search-input').focus(), 300);
+// Focus search input immediately — don't wait for background image
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('search-input').focus();
 });
 
 // ============================================================
